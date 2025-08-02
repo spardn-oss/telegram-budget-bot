@@ -1,11 +1,9 @@
 import os
 import json
 import datetime
-from telegram import (
-    Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
-)
+from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler,
+    ApplicationBuilder, CommandHandler, ContextTypes,
     MessageHandler, filters, JobQueue
 )
 
@@ -17,12 +15,6 @@ DEFAULT_BUDGET = 11000
 DAILY_LIMITS = {
     "Mon": 234, "Tue": 234, "Wed": 234, "Thu": 234, "Fri": 234,
     "Sat": 154, "Sun": 654
-}
-
-CATEGORY_PRICES = {
-    "cigarette": 18,
-    "cigarette_full": 170,
-    "coke": 20
 }
 
 pending_input = {}
@@ -56,17 +48,17 @@ def load_chat_id():
             return int(f.read())
     return None
 
+# ✅ /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_id(update.effective_chat.id)
     await update.message.reply_text(
         "👋 Welcome to Budget Bot!\n\n"
         "Use /setbudget <amount> to set your monthly budget.\n"
-        "Use /spend to log an expense.\n"
-        "Use /bonus to log savings.\n"
-        "Use /summary to see today's progress.\n"
-        "Use /reset to fix or clear data."
+        "Use /bonus to log money you saved (e.g. skipped cigarette).\n"
+        "Use /test9am to test tomorrow’s dashboard right now."
     )
 
+# ✅ /setbudget
 async def setbudget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         amount = int(context.args[0])
@@ -81,10 +73,12 @@ async def setbudget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data(data)
     await update.message.reply_text(f"✅ Monthly budget set to ₹{amount}")
 
+# ✅ /bonus
 async def bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎁 How much bonus did you save today? (e.g., 40)")
     pending_input[update.effective_user.id] = "bonus"
 
+# ✅ Handle number entry after /bonus
 async def handle_bonus_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in pending_input and pending_input[user_id] == "bonus":
@@ -104,6 +98,7 @@ async def handle_bonus_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return True
     return False
 
+# ✅ 9AM Summary — Can be called by test9am or auto job
 async def daily_job(context: ContextTypes.DEFAULT_TYPE):
     chat_id = load_chat_id()
     if not chat_id:
@@ -153,16 +148,22 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(chat_id=chat_id, text=msg)
 
+# ✅ /test9am — manual trigger of daily dashboard
+async def test_daily_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await daily_job(context)
+
+# ✅ Main app setup
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("setbudget", setbudget))
     app.add_handler(CommandHandler("bonus", bonus))
+    app.add_handler(CommandHandler("test9am", test_daily_message))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_bonus_entry))
 
-    job_queue: JobQueue = app.job_queue
-    job_queue.run_daily(daily_job, time=datetime.time(hour=9, minute=0))  # runs daily at 9AM server time
+    # 9AM daily scheduled job
+    app.job_queue.run_daily(daily_job, time=datetime.time(hour=9, minute=0))
 
     app.run_polling()
 
