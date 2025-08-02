@@ -2,14 +2,15 @@ import os
 import json
 import datetime
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
+    Update, InlineKeyboardButton, InlineKeyboardMarkup
 )
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler,
-    filters, ConversationHandler, ContextTypes
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
+    MessageHandler, filters, ConversationHandler, ContextTypes
 )
 from keep_alive import keep_alive
 
+# === Configuration ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATA_FILE = "expenses.json"
 CHAT_ID_FILE = "chat_id.txt"
@@ -21,84 +22,68 @@ DAILY_LIMITS = {
 }
 ITEM_PRICES = {"cigarette": 18, "coke": 20, "breakfast": 0, "fuel": 0, "others": 0}
 CATEGORY_SELECT, QUANTITY_SELECT, CUSTOM_AMOUNT = range(3)
-RESET_SELECT_DATE, RESET_CHOOSE_ACTION, RESET_EDIT_AMOUNT = range(3, 6)
 
-pending_input = {}
-
-def get_today_key():
-    return datetime.datetime.now().strftime("%Y-%m-%d")
-
-def get_yesterday_key():
-    return (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-
-def get_month_key():
-    return datetime.datetime.now().strftime("%Y-%m")
+# === Utils ===
+def get_today(): return datetime.datetime.now().strftime("%Y-%m-%d")
+def get_yesterday(): return (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+def get_dayname(date): return datetime.datetime.strptime(date, "%Y-%m-%d").strftime("%a")
+def get_month(): return datetime.datetime.now().strftime("%Y-%m")
 
 def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {}
-    with open(DATA_FILE, "r") as f:
-        return json.load(f)
+    if not os.path.exists(DATA_FILE): return {}
+    with open(DATA_FILE, "r") as f: return json.load(f)
 
 def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    with open(DATA_FILE, "w") as f: json.dump(data, f, indent=2)
 
 def save_chat_id(chat_id):
-    with open(CHAT_ID_FILE, "w") as f:
-        f.write(str(chat_id))
+    with open(CHAT_ID_FILE, "w") as f: f.write(str(chat_id))
 
 def load_chat_id():
     if os.path.exists(CHAT_ID_FILE):
-        with open(CHAT_ID_FILE, "r") as f:
-            return int(f.read())
+        with open(CHAT_ID_FILE, "r") as f: return int(f.read())
     return None
 
-# ---------------- START & HELP ----------------
-
+# === Commands ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_id(update.effective_chat.id)
     await update.message.reply_text(
         "👋 Welcome to Budget Bot!\n\n"
-        "Commands:\n"
-        "/setbudget <amount>\n"
-        "/bonus\n/spend\n/summary\n/report\n/reset\n/test9am\n/help"
+        "💼 /setbudget <amount>\n"
+        "💸 /spend – Add spending\n"
+        "🎯 /bonus – Calculate bonus from yesterday\n"
+        "📊 /summary – Show dashboard\n"
+        "📅 /report – Full log\n"
+        "🧹 /reset – Manage logs\n"
+        "⏰ /test9am – Simulate daily push"
     )
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start(update, context)
-
 async def setbudget(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        amt = int(context.args[0])
-    except:
-        await update.message.reply_text("❌ Usage: /setbudget 11000")
-        return
+    try: amount = int(context.args[0])
+    except: return await update.message.reply_text("❌ Usage: /setbudget 11000")
     data = load_data()
-    m = get_month_key()
-    data.setdefault(m, {"monthly_budget": amt, "days": {}, "bonus": {}})
-    data[m]["monthly_budget"] = amt
+    m = get_month()
+    data.setdefault(m, {"monthly_budget": amount, "days": {}, "bonus": {}})
+    data[m]["monthly_budget"] = amount
     save_data(data)
-    await update.message.reply_text(f"✅ Budget set to ₹{amt}")
-
-# ---------------- BONUS (AUTO) ----------------
+    await update.message.reply_text(f"✅ Monthly budget set to ₹{amount}")
 
 async def bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
-    m, y = get_month_key(), get_yesterday_key()
-    yesterday = datetime.datetime.strptime(y, "%Y-%m-%d").strftime("%a")
-    limit = DAILY_LIMITS.get(yesterday, 234)
-    spent = sum(data.get(m, {}).get("days", {}).get(y, {}).values())
+    m = get_month()
+    y = get_yesterday()
+    if y not in data.get(m, {}).get("days", {}):
+        return await update.message.reply_text("📭 No spend record for yesterday.")
+    spent = sum(data[m]["days"][y].values())
+    limit = DAILY_LIMITS.get(get_dayname(y), 234)
     saved = limit - spent
     if saved <= 0:
-        await update.message.reply_text("🛑 No bonus. You spent full or over.")
-        return
-    data[m]["bonus"][y] = data[m]["bonus"].get(y, 0) + saved
+        return await update.message.reply_text("🛑 No bonus. Full or overspent.")
+    data[m]["bonus"][y] = saved
     save_data(data)
-    await update.message.reply_text(f"🎉 Bonus ₹{saved} added from yesterday!")
+    await update.message.reply_text(f"🎉 Saved ₹{saved} yesterday. Bonus logged!")
 
-# ---------------- SPEND TRACKING ----------------
-
+# === Spend Workflow ===
 async def spend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton("🚬 Cigarette", callback_data="cigarette")],
           [InlineKeyboardButton("🥤 Coke", callback_data="coke")],
@@ -113,175 +98,128 @@ async def category_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     cat = q.data
     context.user_data["category"] = cat
-    if cat == "cigarette":
-        kb = [[InlineKeyboardButton(str(i), callback_data=str(i)) for i in range(1, 4)],
-              [InlineKeyboardButton(str(i), callback_data=str(i)) for i in range(4, 7)],
-              [InlineKeyboardButton("Full Packet", callback_data="full")]]
-        await q.edit_message_text("🚬 How many cigarettes?")
-        await q.edit_message_reply_markup(InlineKeyboardMarkup(kb))
-        return QUANTITY_SELECT
-    elif cat == "coke":
-        kb = [[InlineKeyboardButton(str(i), callback_data=str(i)) for i in range(1, 4)],
-              [InlineKeyboardButton(str(i), callback_data=str(i)) for i in range(4, 6)]]
-        await q.edit_message_text("🥤 How many cokes?")
-        await q.edit_message_reply_markup(InlineKeyboardMarkup(kb))
+    if cat in ["cigarette", "coke"]:
+        price = ITEM_PRICES[cat]
+        keyboard = [
+            [InlineKeyboardButton(str(i), callback_data=str(i)) for i in range(1, 4)],
+            [InlineKeyboardButton(str(i), callback_data=str(i)) for i in range(4, 7)] if cat == "cigarette" else []]
+        if cat == "cigarette":
+            keyboard.append([InlineKeyboardButton("Full Packet", callback_data="full")])
+        await q.edit_message_text(f"How many {cat}s?")
+        await q.edit_message_reply_markup(InlineKeyboardMarkup(keyboard))
         return QUANTITY_SELECT
     else:
-        await q.edit_message_text("💸 Enter amount:")
+        await q.edit_message_text("💰 Enter amount spent:")
         return CUSTOM_AMOUNT
 
 async def quantity_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    cat = context.user_data.get("category")
     qty = q.data
-    cat = context.user_data.get("category")
-    amount = 170 if qty == "full" and cat == "cigarette" else int(qty) * ITEM_PRICES[cat]
+    amt = 170 if cat == "cigarette" and qty == "full" else int(qty) * ITEM_PRICES[cat]
     data = load_data()
-    m, d = get_month_key(), get_today_key()
-    data.setdefault(m, {"monthly_budget": DEFAULT_BUDGET, "days": {}, "bonus": {}})
-    data[m]["days"].setdefault(d, {})
-    data[m]["days"][d][cat] = data[m]["days"][d].get(cat, 0) + amount
-    save_data(data)
-    await q.edit_message_text(f"✅ Logged ₹{amount} for {cat.capitalize()}")
-    return ConversationHandler.END
-
-async def custom_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        amt = int(update.message.text)
-    except:
-        await update.message.reply_text("❌ Enter number.")
-        return CUSTOM_AMOUNT
-    cat = context.user_data.get("category")
-    data = load_data()
-    m, d = get_month_key(), get_today_key()
+    m, d = get_month(), get_today()
     data.setdefault(m, {"monthly_budget": DEFAULT_BUDGET, "days": {}, "bonus": {}})
     data[m]["days"].setdefault(d, {})
     data[m]["days"][d][cat] = data[m]["days"][d].get(cat, 0) + amt
     save_data(data)
-    await update.message.reply_text(f"✅ Logged ₹{amt} for {cat.capitalize()}")
+    await q.edit_message_text(f"✅ Logged ₹{amt} for {cat}")
     return ConversationHandler.END
 
-# ---------------- DASHBOARD / REPORT ----------------
+async def custom_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try: amt = int(update.message.text)
+    except: return await update.message.reply_text("❌ Enter a number.")
+    cat = context.user_data.get("category")
+    data = load_data()
+    m, d = get_month(), get_today()
+    data.setdefault(m, {"monthly_budget": DEFAULT_BUDGET, "days": {}, "bonus": {}})
+    data[m]["days"].setdefault(d, {})
+    data[m]["days"][d][cat] = data[m]["days"][d].get(cat, 0) + amt
+    save_data(data)
+    await update.message.reply_text(f"✅ Logged ₹{amt} for {cat}")
+    return ConversationHandler.END
 
+# === Summary Dashboard ===
 async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
-    m, d = get_month_key(), get_today_key()
-    month_data = data.get(m, {})
-    today_data = month_data.get("days", {}).get(d, {})
-    today = datetime.datetime.now().strftime("%A, %d %B %Y")
-    spent_total = sum(sum(day.values()) for day in month_data.get("days", {}).values())
-    daily_limit = DAILY_LIMITS.get(datetime.datetime.now().strftime("%a"), 234)
+    m, d = get_month(), get_today()
+    month = data.get(m, {})
+    today_data = month.get("days", {}).get(d, {})
+    spent_total = sum(sum(day.values()) for day in month.get("days", {}).values())
     spent_today = sum(today_data.values())
+    limit = DAILY_LIMITS.get(datetime.datetime.now().strftime("%a"), 234)
+    left_today = limit - spent_today
     msg = f"""
-📆 {today}
-💰 Monthly Budget: ₹{month_data.get('monthly_budget', DEFAULT_BUDGET)}
-💸 Spent So Far: ₹{spent_total}
-💵 Remaining: ₹{month_data.get('monthly_budget', DEFAULT_BUDGET) - spent_total}
+📆 {datetime.datetime.now().strftime('%A, %d %B %Y')}
 
-📅 Today's Limit: ₹{daily_limit}
+💰 Monthly Budget: ₹{month.get("monthly_budget", DEFAULT_BUDGET)}
+💸 Spent So Far: ₹{spent_total}
+💵 Remaining: ₹{month.get("monthly_budget", DEFAULT_BUDGET) - spent_total}
+
+📅 Daily Limit: ₹{limit}
 💸 Spent Today: ₹{spent_today}
-💵 Left Today: ₹{daily_limit - spent_today}
+💵 Left Today: ₹{left_today}
 
 🧾 Breakdown:
 """ + "\n".join([f"- {k.capitalize()}: ₹{v}" for k, v in today_data.items()])
     await update.message.reply_text(msg.strip())
 
+# === Full Report ===
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
-    m = get_month_key()
+    m = get_month()
     msg = f"📆 Report for {m}:\n"
-    for day, cats in data.get(m, {}).get("days", {}).items():
-        msg += f"\n📅 {day}\n"
-        for c, v in cats.items():
-            msg += f"• {c}: ₹{v}\n"
+    for day, logs in data.get(m, {}).get("days", {}).items():
+        msg += f"\n📅 {day}:\n"
+        for cat, amt in logs.items():
+            msg += f"• {cat.capitalize()}: ₹{amt}\n"
     await update.message.reply_text(msg or "No data yet.")
 
-# ---------------- RESET MENU ----------------
-
+# === Reset Command (Simplified) ===
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = [[InlineKeyboardButton("🗓 Daily", callback_data="daily")]]
-    await update.message.reply_text("🔄 Choose reset type:", reply_markup=InlineKeyboardMarkup(kb))
-    return RESET_SELECT_DATE
-
-async def reset_select_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    m = get_month_key()
     data = load_data()
-    dates = list(data.get(m, {}).get("days", {}).keys())
-    if not dates:
-        await q.edit_message_text("📭 No data to reset.")
-        return ConversationHandler.END
-    buttons = [[InlineKeyboardButton(date, callback_data=date)] for date in dates]
-    await q.edit_message_text("📅 Choose a date to manage:", reply_markup=InlineKeyboardMarkup(buttons))
-    return RESET_CHOOSE_ACTION
+    m, d = get_month(), get_today()
+    if m in data and d in data[m].get("days", {}):
+        del data[m]["days"][d]
+        save_data(data)
+        await update.message.reply_text(f"🧹 Cleared data for {d}")
+    else:
+        await update.message.reply_text("📭 No data to clear for today.")
 
-async def reset_choose_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    context.user_data["reset_day"] = q.data
-    data = load_data()
-    m = get_month_key()
-    categories = data.get(m, {}).get("days", {}).get(q.data, {})
-    buttons = [[InlineKeyboardButton(f"{k}: ₹{v}", callback_data=k)] for k, v in categories.items()]
-    await q.edit_message_text(f"📂 Edit {q.data}", reply_markup=InlineKeyboardMarkup(buttons))
-    return RESET_EDIT_AMOUNT
-
-async def reset_edit_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    cat = q.data
-    context.user_data["reset_cat"] = cat
-    await q.edit_message_text(f"❓ What to do with {cat}?\n[Edit] or [Delete]")
-    return ConversationHandler.END  # You can extend here to support actual edit/delete logic
-
-# ---------------- DAILY MESSAGE ----------------
-
+# === Scheduled 9AM Push ===
 async def daily_job(context: ContextTypes.DEFAULT_TYPE):
     chat_id = load_chat_id()
     if not chat_id: return
-    fake_update = Update(update_id=0, message=None)
-    await summary(fake_update, context)
+    update = Update(update_id=0, message=None)
+    await summary(update, context)
 
 async def test_daily_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await summary(update, context)
 
-# ---------------- MAIN ----------------
-
+# === Main ===
 def main():
     keep_alive()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    spend_conv = ConversationHandler(
+    conv = ConversationHandler(
         entry_points=[CommandHandler("spend", spend)],
         states={
             CATEGORY_SELECT: [CallbackQueryHandler(category_select)],
             QUANTITY_SELECT: [CallbackQueryHandler(quantity_select)],
-            CUSTOM_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, custom_amount)]
+            CUSTOM_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, custom_amount)],
         },
         fallbacks=[]
     )
 
-    reset_conv = ConversationHandler(
-        entry_points=[CommandHandler("reset", reset)],
-        states={
-            RESET_SELECT_DATE: [CallbackQueryHandler(reset_select_date)],
-            RESET_CHOOSE_ACTION: [CallbackQueryHandler(reset_choose_action)],
-            RESET_EDIT_AMOUNT: [CallbackQueryHandler(reset_edit_amount)],
-        },
-        fallbacks=[]
-    )
-
-    app.add_handler(spend_conv)
-    app.add_handler(reset_conv)
+    app.add_handler(conv)
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("setbudget", setbudget))
     app.add_handler(CommandHandler("bonus", bonus))
     app.add_handler(CommandHandler("summary", summary))
     app.add_handler(CommandHandler("report", report))
+    app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("test9am", test_daily_message))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_bonus_entry))
 
     app.job_queue.run_daily(daily_job, time=datetime.time(hour=9, minute=0))
     app.run_polling()
