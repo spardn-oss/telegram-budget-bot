@@ -4,8 +4,9 @@ import datetime
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes,
-    MessageHandler, filters, JobQueue
+    MessageHandler, filters
 )
+from keep_alive import keep_alive  # 👈 new line to keep app alive on Render
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATA_FILE = "expenses.json"
@@ -54,8 +55,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome to Budget Bot!\n\n"
         "Use /setbudget <amount> to set your monthly budget.\n"
-        "Use /bonus to log money you saved (e.g. skipped cigarette).\n"
-        "Use /test9am to test tomorrow’s dashboard right now."
+        "Use /bonus to log money you saved.\n"
+        "Use /test9am to test tomorrow’s dashboard now."
     )
 
 # ✅ /setbudget
@@ -78,7 +79,7 @@ async def bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎁 How much bonus did you save today? (e.g., 40)")
     pending_input[update.effective_user.id] = "bonus"
 
-# ✅ Handle number entry after /bonus
+# ✅ Handle bonus input
 async def handle_bonus_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in pending_input and pending_input[user_id] == "bonus":
@@ -98,7 +99,7 @@ async def handle_bonus_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return True
     return False
 
-# ✅ 9AM Summary — Can be called by test9am or auto job
+# ✅ Daily dashboard job
 async def daily_job(context: ContextTypes.DEFAULT_TYPE):
     chat_id = load_chat_id()
     if not chat_id:
@@ -121,9 +122,9 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE):
     today_left = limit_today - today_spent
 
     msg = f"""
-╔═══════════════╗
-║  📅 DAILY DASH  ║
-╚═══════════════╝
+ ╔═══════════════╗
+║  📅DAILY DASH  ║
+ ╚═══════════════╝
 
 🔙 Yesterday — {yesterday_key}
 ━━━━━━━━━━━━━━━━━━
@@ -142,18 +143,17 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE):
 🎯 Limit       : ₹{limit_today}
 💸 Spent So Far: ₹{today_spent}
 🟢 Left Today  : ₹{today_left}
-
-💡 Tip: Skip coke today, save ₹20!
 """.strip()
 
     await context.bot.send_message(chat_id=chat_id, text=msg)
 
-# ✅ /test9am — manual trigger of daily dashboard
+# ✅ /test9am
 async def test_daily_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await daily_job(context)
 
-# ✅ Main app setup
+# ✅ Main function
 def main():
+    keep_alive()  # 👈 start Flask dummy server for Render
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -162,9 +162,7 @@ def main():
     app.add_handler(CommandHandler("test9am", test_daily_message))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_bonus_entry))
 
-    # 9AM daily scheduled job
     app.job_queue.run_daily(daily_job, time=datetime.time(hour=9, minute=0))
-
     app.run_polling()
 
 if __name__ == "__main__":
