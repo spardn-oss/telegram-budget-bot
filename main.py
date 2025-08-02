@@ -24,7 +24,7 @@ CATEGORY_PRICES = {
     "coke": 20
 }
 
-pending_input = {}  # Tracks what category user is inputting manually
+pending_input = {}
 
 def get_today_key():
     return datetime.datetime.now().strftime("%Y-%m-%d")
@@ -47,7 +47,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Welcome to Budget Bot!\n"
         "Use /setbudget <amount> to set your monthly budget.\n"
         "Use /spend to log an expense.\n"
-        "Use /summary to see your spending summary."
+        "Use /summary to see your spending summary.\n"
+        "Use /reset to clear data."
     )
 
 async def setbudget(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -191,12 +192,56 @@ async def send_summary(source, context, is_query=False):
     else:
         await source.message.reply_text(msg)
 
+# ✅ RESET FEATURE
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    buttons = [
+        [
+            InlineKeyboardButton("Monthly", callback_data="reset_month"),
+            InlineKeyboardButton("Daily", callback_data="reset_day"),
+            InlineKeyboardButton("Today Only", callback_data="reset_today")
+        ]
+    ]
+    await update.message.reply_text(
+        "⚠️ What do you want to reset?",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+async def handle_reset_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    choice = query.data
+    data = load_data()
+    month = get_month_key()
+    day = get_today_key()
+
+    if month not in data:
+        await query.edit_message_text("⚠️ No data found.")
+        return
+
+    if choice == "reset_month":
+        data.pop(month)
+        msg = "🗑 Monthly data (budget + spend) has been reset."
+    elif choice == "reset_day":
+        data[month]["days"] = {}
+        msg = "📅 All daily data this month has been cleared."
+    elif choice == "reset_today":
+        if "days" in data[month] and day in data[month]["days"]:
+            data[month]["days"].pop(day)
+            msg = "🧹 Today’s spend has been reset."
+        else:
+            msg = "✅ Nothing to reset for today."
+
+    save_data(data)
+    await query.edit_message_text(f"✅ {msg}")
+
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("setbudget", setbudget))
     app.add_handler(CommandHandler("spend", spend))
     app.add_handler(CommandHandler("summary", send_summary))
+    app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(CallbackQueryHandler(handle_reset_choice, pattern="^reset_"))
     app.add_handler(CallbackQueryHandler(handle_callback, pattern="^spend_.*"))
     app.add_handler(CallbackQueryHandler(handle_button_quantities, pattern="^(cig_|coke_).*"))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_quantity))
